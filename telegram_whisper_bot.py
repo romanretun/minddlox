@@ -1,62 +1,76 @@
 import os
 import logging
 import tempfile
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI
-import nest_asyncio
 import asyncio
+import nest_asyncio
 
-# Получаем токены из переменных окружения
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# Инициализация клиента OpenAI с ключом
-client = OpenAI(api_key=OPENAI_API_KEY)
+from openai import OpenAI
 
+# Настройка ключей
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Настройка логов
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Пришли мне аудиофайл, я его расшифрую.")
+# Инициализация OpenAI клиента
+client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Команда /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Пришли мне аудиофайл или голосовое сообщение, и я его расшифрую.")
+
+# Обработка аудио
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    print(f"Получено сообщение: {message}")  # Отладка
+
     file = None
-    if update.message.voice:
-        file = await update.message.voice.get_file()
-    elif update.message.audio:
-        file = await update.message.audio.get_file()
+    if message.voice:
+        print("Тип: voice")
+        file = await message.voice.get_file()
+    elif message.audio:
+        print("Тип: audio")
+        file = await message.audio.get_file()
+    elif message.document and message.document.mime_type.startswith("audio/"):
+        print("Тип: document с аудио")
+        file = await message.document.get_file()
     else:
-        await update.message.reply_text("Пожалуйста, отправь аудиофайл или голосовое сообщение.")
+        await message.reply_text("Пожалуйста, отправь голосовое, аудио или аудиодокумент.")
         return
 
-    with tempfile.NamedTemporaryFile(suffix=".ogg") as tmp_file:
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_file:
         await file.download_to_drive(tmp_file.name)
-
-        await update.message.reply_text("Обрабатываю аудио...")
+        await message.reply_text("Обрабатываю аудио...")
 
         try:
             with open(tmp_file.name, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
-                    file=audio_file,
                     model="whisper-1",
-                    language="ru"  # укажи язык, если нужно
+                    file=audio_file
                 )
-            text = transcript.text
-            await update.message.reply_text(f"Расшифровка:\n\n{text}")
+            await message.reply_text(f"Расшифровка:\n\n{transcript.text}")
         except Exception as e:
-            await update.message.reply_text(f"Ошибка при расшифровке: {e}")
+            logging.exception("Ошибка при расшифровке:")
+            await message.reply_text(f"Ошибка при расшифровке:\n\n{e}")
 
+# Запуск бота
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+    app.add_handler(MessageHandler(filters.ALL, handle_audio))  # ловим всё
 
     print("Бот запущен")
     await app.run_polling(close_loop=False)
 
-if __name__ == '__main__':
+# Точка входа
+if __name__ == "__main__":
     nest_asyncio.apply()
     asyncio.run(main())
